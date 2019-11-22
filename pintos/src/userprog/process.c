@@ -23,13 +23,11 @@
 #include "vm/frame.h"
 #include "vm/page.h"
 #include "vm/swap.h"
-//#include "threads/malloc.h"
 
+extern struct lock lru_lock; 
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 void extract_filename(char *file_name, char *filename);
-//void* alloc_frame(void* umap);
-//struct lock file_locktwo;
 /* Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
@@ -78,10 +76,7 @@ start_process (void *file_name_)
   bool success;
   struct list_elem *e;
   
- // vm_init(&thread_current()->vm);
   /* Initialize interrupt frame and load executable. */
-  //lru_init();
-  //swap_init();
   memset (&if_, 0, sizeof if_);
   if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
   if_.cs = SEL_UCSEG;
@@ -96,9 +91,6 @@ start_process (void *file_name_)
     thread_current()->flag=1; 
     thread_exit ();
   }
-  //if(success){
-  //printf("succeed!!!!!!!!!!!!!!!\n");
-  //}
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
      threads/intr-stubs.S).  Because intr_exit takes all of its
@@ -106,7 +98,6 @@ start_process (void *file_name_)
      we just point the stack pointer (%esp) to our stack frame
      and jump to it. */
   asm volatile ("movl %0, %%esp; jmp intr_exit" : : "g" (&if_) : "memory");
-  //printf("after");
   NOT_REACHED ();
 }
 
@@ -138,6 +129,7 @@ process_wait (tid_t child_tid UNUSED)
         list_remove(&child_remove);
         sema_down(&child_thread->child_sema);
         exit_num = child_thread->exit_num;
+        //printf("waiting\n");
         sema_up(&child_thread->exit_sema);
         return exit_num;
      }
@@ -155,60 +147,30 @@ process_exit (void)
   uint32_t *pd;
   struct list_elem *e;
 
-  //file_close(cur->file);
+  file_close(cur->file);
   struct file *deletefile = thread_current()->fd[2];
   if(deletefile!=NULL){
      file_close(deletefile);
   }
-  //vm_destroy(&cur->vm);
   sema_up(&cur->child_sema);
-  //file_close(cur->file);
-  //vm_destroy(&cur->vm);
-  /*for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
-       e = list_next (e))
-    {
-      struct thread *child = list_entry (e, struct thread, child);
-      sema_down (&child->child_sema);
-      //printf("child left\n");
-      sema_up (&child->exit_sema);
-    }*/
-  //printf("destroy\n");
-  struct list_elem *mmap_e = list_begin(&cur->mmap_list);
-  /*for(int i=0;i<thread_current()->mapid;i++){
-     
-     do_munmap(i);
-  }*/
-  //printf("mmap list size is %d\n",list_size(&cur->mmap_list));
-  //for(mmap_e= list_begin(&cur->mmap_list); mmap_e!=list_end(&cur->mmap_list);mmap_e=list_next(mmap_e)){
-  while(mmap_e!=list_end(&cur->mmap_list)){
-     struct mmap_file *remove = list_entry(mmap_e,struct mmap_file,elem);
-     mmap_e=list_next(mmap_e);
-     do_munmap(remove);
-  }
-  //}
-  //printf("munmap finished\n");
-  vm_destroy(&cur->vm);
-  //printf("file closed");
-  file_close(cur->file);
   for (e = list_begin (&cur->child_list); e != list_end (&cur->child_list);
        e = list_next (e))
     {
       struct thread *child = list_entry (e, struct thread, child);
       sema_down (&child->child_sema);
-      //printf("child left\n");
       sema_up (&child->exit_sema);
     }
-
-  //printf("vm destroyed");
+  struct list_elem *mmap_e = list_begin(&cur->mmap_list);
+  while(!list_empty(&cur->mmap_list)&&mmap_e!=list_end(&cur->mmap_list)){
+     struct mmap_file *remove = list_entry(mmap_e,struct mmap_file,elem);
+     mmap_e=list_next(mmap_e);
+     do_munmap(remove);
+  }
+  vm_destroy(&cur->vm);
   sema_down(&cur->exit_sema);
-  //file_close(cur->file);
-  //vm_destroy(&cur->vm);
-  //file_close(cur->file);
-  //&cur->vm =NULL;
-//  thread_current()->vm = NULL;
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
- // palloc_free_page);
   pd = cur->pagedir;
   if (pd != NULL) 
     {
@@ -221,10 +183,8 @@ process_exit (void)
          that's been freed (and cleared). */
       cur->pagedir = NULL;
       pagedir_activate (NULL);
-      //printf("up to here\n");
       pagedir_destroy (pd);
     }
-  //printf("exiting now\n");
 }
 
 /* Sets up the CPU for running user code in the current
@@ -397,27 +357,20 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
 
-  //vm_init(&t->vm);
-  //printf("vm address in load function %x\n",&t->vm);
-
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
 
   char filename[256];
   extract_filename((char*)file_name,filename);
-  //printf("filename is %s\n",filename);
   /* Open executable file. */
-  //lock_acquire(&file_lock);
   file = filesys_open (filename);
-  //lock_release(&file_lock);
   if (file == NULL) 
     {
       printf ("load: %s: open failed\n", file_name);
       goto done; 
     }
   t->file=file;
-  //file_deny_write(file);
   /* Read and verify executable header. */
   if (file_read (file, &ehdr, sizeof ehdr) != sizeof ehdr
       || memcmp (ehdr.e_ident, "\177ELF\1\1\1", 7)
@@ -493,23 +446,18 @@ load (const char *file_name, void (**eip) (void), void **esp)
   
   push_to_stack((char*)file_name,esp);
   /* Start address. */
-  //printf("file length in load is %d\n",file_length(file));
   *eip = (void (*) (void)) ehdr.e_entry;
   thread_current()->esp =*esp;   
   file_deny_write(file);
   success = true;
-  //sema_up(&t->child_sema);
  done:
   /* We arrive here whether the load is successful or not. */
-//  lock_release(&file_lock);
-  //file_close (file);
-  //printf("file length in load is %d\n",file_length(file));
   return success;
 }
 
 /* load() helpers. */
 
-static bool install_page (void *upage, void *kpage, bool writable);
+ bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -587,61 +535,23 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
          and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
-      //printf("read bytes in load_seg is %d\n",read_bytes);
-      //printf("read bytes actual %d\n",page_read_bytes);
-      //printf("file pos in load segment is %x\n",file);
-      //if(page_zero_bytes==PGSIZE){
-      	struct sppt_entry *entry= (struct sppt_entry*) malloc(sizeof(struct sppt_entry));
-        if(entry==NULL)
-          printf("malloc failed\n");
-        memset(entry,0,sizeof(struct sppt_entry));
-        entry->type=VM_BIN;
-        entry->file=file;
-        entry->upage=upage;
-        entry->read_bytes=page_read_bytes;
-        entry->zero_bytes=page_zero_bytes;
-        entry->offset=ofs;
-        entry->writable=writable;
-        entry->ref_bit=1;
-        insert_vme(&thread_current()->vm,entry);
-        ofs+=page_read_bytes;
-      //}
-      //  printf("file pointer is %x\n",file);
-        //printf("file length in load is %d\n",file_length(file));
-      /*else{
-  //    printf("vm addr in load segment func %x\n",&thread_current()->vm);
-      //printf("upage addr in load segment %x\n",upage);
-     // insert_vme_file(&thread_current()->vm,upage,file,page_read_bytes,page_zero_bytes,ofs); 
-        //if(page_read_bytes!=0){
-        struct frame_entry *frame=alloc_frame_entry(PAL_USER);
-        void *kpage=frame->kpage;
-        if(file_read(file,kpage,page_read_bytes)!=(int)page_read_bytes){
-           printf("load failed\n");
-           free_frame(kpage);
-           return false;
-        }
-        memset (kpage + page_read_bytes, 0, page_zero_bytes);
-        if (!install_page (upage, kpage, writable))
-        {
-          printf("install failed\n");
-          free_frame(kpage);
-          return false;
-        }
-      }*/
-      //entry->
-      /* Get a page of memory. */
-      //printf("alloc first %x\n",upage);
+      struct sppt_entry *entry= (struct sppt_entry*) malloc(sizeof(struct sppt_entry));
+      if(entry==NULL)
+        printf("malloc failed\n");
+      memset(entry,0,sizeof(struct sppt_entry));
+      entry->type=VM_BIN;
+      entry->file=file;
+      entry->upage=upage;
+      entry->read_bytes=page_read_bytes;
+      entry->zero_bytes=page_zero_bytes;
+      entry->offset=ofs;
+      entry->writable=writable;
+      entry->ref_bit=1;
+      entry->stk_flag=0;
+      insert_vme(&thread_current()->vm,entry);
+      ofs+=page_read_bytes;
       
-//struct frame_entry *frame = alloc_frame_entry(PAL_USER);
-//void *kpage=frame->kpage;
-      //#endif*/
-      /*if (kpage == NULL){
-        printf("exception should be thrown\n"); 
-        return false;
-      }*/
       /* Load this page. */
-      //printf("kpage in load segment is %x\n",kpage);
-      //printf("file bytes in load segment is %d\n",file_read(file,kpage,page_read_bytes)); 
       /*if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
         {
         //  palloc_free_page (kpage);
@@ -665,11 +575,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
-      
-      //ofs+=page_read_bytes;
     }
-  //printf("file length in load is %d\n",file_length(file));
-  //printf("file pointer length in load is %x\n",sizeof(file));
   return true;
 }
 
@@ -681,17 +587,12 @@ setup_stack (void **esp)
   //uint8_t *kpage;
   struct frame_entry *kpage;
   bool success = false;
-  
-  //printf("setup stack before %x\n",PHYS_BASE-PGSIZE);
-  //kpage = alloc_frame (PAL_USER | PAL_ZERO);
   void *upage = ((uint8_t *) PHYS_BASE)-PGSIZE;
   struct sppt_entry *entry= (struct sppt_entry*) malloc(sizeof(struct sppt_entry));
   if(entry==NULL){
     printf("malloc failed\n");
   }
   kpage = alloc_frame_entry(PAL_USER|PAL_ZERO);
-  //kpage->entry=entry;
-  //printf("kpage in setup stack %x\n",kpage);  
   if (kpage != NULL) 
     {
       kpage->entry=entry;
@@ -712,9 +613,6 @@ setup_stack (void **esp)
   //kpage->entry->kpage=kpage;
   kpage->entry->writable=true;
   insert_vme(&thread_current()->vm,kpage->entry);
-  /*else{
-    printf("exception should be thrown2\n");
-  }*/
   return success;
 }
 
@@ -727,15 +625,10 @@ setup_stack (void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
+bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();
-  //struct sppt_entry *entry= malloc(sizeof(struct sppt_entry));
-  /*struct sppt_entry *entry;
-  entry->upage=upage;
-  entry->kpage=kpage;*/
-  //insert_vme(&t->vm,upage,kpage); 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
@@ -743,54 +636,25 @@ install_page (void *upage, void *kpage, bool writable)
 }
 
 bool handle_mm_fault(struct sppt_entry *entry){
-   //printf("enter fault handler\n");
-   //printf("file length in handle mm fault is %d\n",file_length(entry->file));
-   struct frame_entry *frame = alloc_frame_entry(PAL_USER);
-   ASSERT(frame!=NULL);
-   frame->entry=entry;
-   ASSERT(pg_ofs(frame->kpage)==0);
-   ASSERT(entry!=NULL);
-   //loading
-   //printf("frame -> kpage is %x\n",frame->kpage);
-   //printf("entry ->read_bytes is %d\n",entry->read_bytes);
-   //printf("entry type is %d\n",entry->type);
-   //printf("file pos is %x\n",entry->file);
-   //printf("file length in handle mm fault is %d\n",file_length(entry->file)); 
-   //if (file_read(entry->file,frame->kpage,entry->read_bytes) != (int)entry->read_bytes){
-     // printf("load fail!\n");
-   //}
-   //load_file(frame->kpage,entry);
-   //memset (frame->kpage + entry->read_bytes, 0, entry->zero_bytes);
+  struct frame_entry *frame = alloc_frame_entry(PAL_USER);
+  ASSERT(frame!=NULL);
+  frame->entry=entry;
+  ASSERT(pg_ofs(frame->kpage)==0);
+  ASSERT(entry!=NULL);
   switch(entry->type){
    case VM_BIN:
    case VM_FILE:
      if (!load_file(frame->kpage,entry)||!install_page (entry->upage,frame->kpage,entry->writable)){
-      //NOT_REACHED();
-      //free_
         free_frame(frame->kpage);
         return false;
-        //printf("install fail!\n");
      }
      return true;
-   //case VM_FILE:
-     //   return true;
-     //printf("file exception\n");
    case VM_ANON:
-      //printf("anon swap\n");
      swap_in(entry->swap_slot,frame->kpage);
      if(!install_page(entry->upage,frame->kpage,entry->writable)){
         free_frame(frame->kpage);
         return false;
      }
-  // default:
-   
-    // printf("noooooooooooo\n");
-   /*if(!load_file(entry->kpage,entry)||!install_page(entry->upage,entry->kpage,entry->writable)){
-      printf("load or install fail!\n");
-   }*/
-   //#ifdef VM
-   //install_page(vme->upage,kpage,0);
-   //#endif
      return true;
    }
 }
@@ -798,34 +662,31 @@ bool handle_mm_fault(struct sppt_entry *entry){
 void do_munmap(struct mmap_file* mmap_file){
    //struct list vme_list = mmap_file->vme_list;
    struct list_elem *e=list_begin(&mmap_file->vme_list);
-   //printf("list size is %d\n",list_size(&mmap_file->vme_list));
+   //struct sppt_entry *entry=list_entry(e,struct sppt_entry,mmap_elem);
+   //void *kpage=pagedir_get_page(thread_current()->pagedir,entry->upage);
+   
    while(e!=list_end(&mmap_file->vme_list)){
-   //for(e=list_begin(&vme_list);e!=list_end(&vme_list);e=list_next(e)){
       struct sppt_entry *entry =list_entry(e,struct sppt_entry,mmap_elem);
-      if(pagedir_get_page(thread_current()->pagedir, entry->upage)&&pagedir_is_dirty(thread_current()->pagedir,entry->upage)){
-         if(file_write_at(entry->file,entry->upage,entry->read_bytes,entry->offset)!=(int)entry->read_bytes){
-            printf("writing to file failed\n");
+      if(pagedir_get_page(thread_current()->pagedir,entry->upage)!=NULL){
+         if(pagedir_is_dirty(thread_current()->pagedir,entry->upage)){
+            //entry->ref_bit=true;
+            if(file_write_at(entry->file,entry->upage,entry->read_bytes,entry->offset)!=(int)entry->read_bytes){
+               printf("writing to file failed\n");
+            }
          }
       free_frame(pagedir_get_page(thread_current()->pagedir,entry->upage));
       }
-      //printf("free frame enter\n");
-     // free_frame(pagedir_get_page(thread_current()->pagedir,entry->upage));
-      //printf("free frame out\n");
-      e=list_remove(e);
+      e=list_next(e);
+      list_remove(e->prev);
       delete_vme(&thread_current()->vm,entry);
-     // printf("delete vme\n"); 
-      //e=list_remove(e);
-     // printf("remove e\n");
    }
-   //printf("before free");
    list_remove(&mmap_file->elem);
    free(mmap_file);
-   //printf("munmap finish\n");
 }
 
-bool expand_stack(void* addr){
+bool expand_stack(void* addr,void* esp){
     void* upage = pg_round_down(addr);
-    struct frame_entry *newframe = alloc_frame_entry(PAL_USER);
+    struct frame_entry *newframe = alloc_frame_entry(PAL_USER|PAL_ZERO);
     //newframe->entry=entry;
     struct sppt_entry *entry = (struct sppt_entry *)malloc(sizeof(struct sppt_entry));    
     newframe->entry=entry;
@@ -833,8 +694,10 @@ bool expand_stack(void* addr){
     entry->writable =1;
     entry->type = VM_ANON;
     insert_vme(&thread_current()->vm,entry);
+    //printf("insert finish in expand stack\n");
     if(!install_page(upage,newframe->kpage,true)){
         printf("install in expand stack failed\n");
     }
+    thread_current()->esp=upage;
     return true;  
 }

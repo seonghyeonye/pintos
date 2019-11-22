@@ -480,6 +480,8 @@ init_thread (struct thread *t, const char *name, int priority)
   #endif
   #ifdef VM
   list_init(&t->mmap_list);
+  sema_init(&t->buffer_sema,0);
+  t->stk_flag=0;
   #endif 
   old_level = intr_disable ();
   list_push_back (&all_list, &t->allelem);

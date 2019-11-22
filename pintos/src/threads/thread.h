@@ -114,11 +114,14 @@ struct thread
     tid_t  childone;
     struct file* file;
     int flag;
+    //bool is_loaded;
 #endif
 #ifdef VM
+    struct semaphore buffer_sema;
     struct list mmap_list;
     int mapid;
     void* esp;
+    bool stk_flag;
 #endif
 
     /* Owned by thread.c. */

@@ -16,6 +16,7 @@ struct frame_entry{
   struct sppt_entry *entry;
 };
 
+struct hash lru_hash;
 void lru_init(void);
 struct frame_entry *alloc_frame_entry(enum palloc_flags flag);
 void free_frame(void*);

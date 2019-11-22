@@ -13,6 +13,7 @@ static long long page_fault_cnt;
 
 static void kill (struct intr_frame *);
 static void page_fault (struct intr_frame *);
+//extern struct lock file_lock;
 
 /* Registers handlers for interrupts that can be caused by user
    programs.
@@ -112,11 +113,14 @@ kill (struct intr_frame *f)
 }
 
 
-bool verify_stack(void* sp,void* esp){
-  if(sp<esp-32||(!is_user_vaddr(sp))||sp< (void *)0x08048000||PHYS_BASE-0x800000>sp){
+bool verify_stack(void* sp,void* esp,void* user_esp){
+  if((!is_user_vaddr(sp))||PHYS_BASE-0x800000>sp)
+      return false;
      //printf("thread_current - esp is %d\n",esp-sp);
-     return false;
-     }
+  if(sp!=user_esp-4&&sp!=user_esp-32&&esp>sp){
+        //printf("user esp-sp %d\n",user_esp-sp);
+        return false;
+  }
  //printf("thread_current - esp is %d\n",esp-sp);   
   return true;
 }
@@ -140,6 +144,7 @@ page_fault (struct intr_frame *f)
   bool user;         /* True: access by user, false: access by kernel. */
   void *fault_addr;  /* Fault address. */
 
+  //lock_acquire(&file_lock);
   /* Obtain faulting address, the virtual address that was
      accessed to cause the fault.  It may point to code or to
      data.  It is not necessarily the address of the instruction
@@ -161,27 +166,19 @@ page_fault (struct intr_frame *f)
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
 
-  //printf("fault addr is %x\n",f->esp);
-  //printf("fault addr is %x\n",fault_addr);
   if(not_present==false){
-    //printf("read on write page");
     exit(-1);
   }
-  /*if(user==1&&f->esp<PHYS_BASE){
-    printf("editing\n");
-    exit(-1);
-  }*/
-  //}
-  //if(not_present==true)
-    //exit(-1);
-  //void* fault_page =(void*)pg_round_down(fault_addr);
-  //printf("user is %d\n",user);
-  //printf("fault addr is %x\n",f->esp);
-  //printf("not present value is %d\n",not_present);
+  void* esp;
+  if(user==false){
+    esp= thread_current()->esp;
+  }
+  else{
+    esp=f->esp;
+  }
   struct sppt_entry *vme =  find_vme(fault_addr);
   if(vme==NULL){
-    //printf("vme none\n");
-    if(verify_stack(fault_addr,f->esp)){
+    if(verify_stack(fault_addr,esp,f->esp)){
        expand_stack(fault_addr);
        return; 
     }
@@ -189,24 +186,9 @@ page_fault (struct intr_frame *f)
        exit(-1);
     }
   }
-  ///printf("file length in exception.c is %d\n",file_length(vme->file));
-  //printf("file pointer in exception.c is %x\n",vme->file);
-  /*struct hash *vm = &(thread_current()->vm);
-  printf("addr is %x\n",vm );
-  struct sppt_entry *temp;
-  printf("page fault count %d\n",page_fault_cnt);
-  temp->upage = fault_page;
-  printf("sdlkfjlskjdflksjf\n");
-  struct hash_elem *elem = hash_find(vm,&temp->elem);
-  if(elem==NULL) {
-    exit(-1);
-    //return NULL;
-  }*/
-  //struct sppt_entry *vme= hash_entry(elem,struct sppt_entry,elem);
-  //printf("pass\n");
-  //printf("handler enter\n");
-  if(!handle_mm_fault(vme))
+  if(!handle_mm_fault(vme)){
      exit(-1);
+  }
 }
 
   /*if (user==0||not_present==1||fault_addr>=0xc0000000){

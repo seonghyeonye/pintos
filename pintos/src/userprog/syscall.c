@@ -14,11 +14,10 @@
 #include "threads/palloc.h"
 #include "userprog/pagedir.h"
 #include "vm/page.h"
+#include "vm/frame.h"
+#include "vm/swap.h"
 
 static void syscall_handler (struct intr_frame *);
-
-//struct lock file_lock;
-//struct semaphore exit_sema;
 
 void
 syscall_init (void)
@@ -30,66 +29,71 @@ syscall_init (void)
 struct sppt_entry *valid_pointer(void *vaddr)
 {   
   if(!(is_user_vaddr(vaddr))||(vaddr < (void *)0x08048000))
-//||!(pagedir_get_page(thread_current()->pagedir, vaddr)))
   {
-     //if(!find_vme(vaddr)){
-     //printf("not_found\n");
-     //}
      exit(-1);
   }
   struct sppt_entry *entry = find_vme(vaddr);
   if(entry==NULL){
-     //printf("no entry\n");
-     exit(-1);
-  }
-  return entry;
-  /*else if(!pagedir_get_page(thread_current()->pagedir, vaddr)){
-  
-       if(!find_vme(vaddr)){
-         printf("no vme\n");
-          exit(-1);
+     if(vaddr>thread_current()->esp){
+        if(expand_stack(vaddr)){
+           entry= find_vme(vaddr);
+           entry->stk_flag=true;
         }
-  }
-  else{
-  return find_vme(vaddr);
-  }*/
-    //struct sppt_entry *entry = find_vme(vaddr);
-    //if(entry==NULL){
-      //printf("null\n");
-      //exit(-1);
-    //}
-    //return entry;
-  //}
-  //if(!find_vme(vaddr)){
-    // printf("not found!\n");
-  //}
-  /*if(!find_vme(vaddr)){
-   printf("stack growth needed\n");
-  }*/
+     }
+     else{
+       exit(-1);
+     }
+  } 
+  return entry;
 }
 
 void valid_buffer(void *buffer,void* last){
-   //printf("size is %d\n",size);
-   //buffer=pg_round_down(buffer);
-   //valid_pointer(buffer);
-   //for(unsigned i=0;buffer<last;i++){
-     //buffer += PGSIZE;
     for (; buffer < last; buffer+= PGSIZE){
-     //printf("buffer is %x\n",buffer);
      struct sppt_entry* entry = valid_pointer(buffer);
      if(entry->writable==false){
-      
-       //printf("ddooo\n");
        exit(-1);
-       }
+     }
    }
 }
 
-void valid_string(char *str){
-   for(;*str!=NULL;str++){
-      valid_pointer((void *)str);
+void valid_write(void *str,void *end){
+   for(;str<end;str+=PGSIZE){
+      struct sppt_entry *entry=valid_pointer(str);
    }
-}   
+}  
+ 
+void pin_write(void* start,void* end){
+   for(;start<end;start+=PGSIZE){
+      struct sppt_entry *vme=find_vme(start);
+      vme->ref_bit=true;
+   }
+}
+
+void pin_entry(void* start,void* end){
+   start=pg_round_down(start);
+   for(;start<end;start+=PGSIZE){
+      struct sppt_entry *vme=find_vme(start);
+      if(vme->type==VM_ANON){
+        if(vme->stk_flag)
+          break;
+        if(pagedir_get_page(thread_current()->pagedir,vme->upage)==NULL){ 
+         struct frame_entry *kframe=alloc_frame_entry(PAL_USER);
+         void *kpage=kframe->kpage;
+         kframe->entry=vme;
+         swap_in(vme->swap_slot,kpage);
+         install_page(vme->upage,kpage,vme->writable);
+      }
+      }
+      vme->ref_bit=true;
+  }
+}
+
+void unpin_entry(void* start, void* end){
+   for(;start<end;start+=PGSIZE){
+      struct sppt_entry *vme=find_vme(start);
+      vme->ref_bit=false;
+  }
+}
 
 void halt(void){
   shutdown_power_off();
@@ -127,24 +131,22 @@ int wait (pid_t pid){
 
 bool create(const char *file, unsigned initial_size){
   valid_pointer(file);
-  //printf("file name is %s\n",file);
-  //printf("file pointer is %x\n",file);
-  //printf("inital size is %d\n",initial_size);
+  lock_acquire(&file_lock);
   bool ret = filesys_create(file,initial_size);
-  //printf("return value is %d\n",ret);
+  lock_release(&file_lock);
   return ret;
 }
 
 bool remove(const char *file){
-   
+   lock_acquire(&file_lock); 
    bool ret = filesys_remove(file);
+   lock_release(&file_lock);
    return ret;
 }
 
 int open (const char *file){
    int ret = -1;
    valid_pointer(file);
-   //valid_string(file);
    lock_acquire(&file_lock);
    struct file* open_file =filesys_open(file);
    if(open_file!=NULL){
@@ -159,7 +161,6 @@ int open (const char *file){
       }
    }
    lock_release(&file_lock);
-   //printf("return vlaue of open is %d\n",ret);
    return ret;
 }
 
@@ -174,12 +175,10 @@ int read(int fd, void* buffer, unsigned size){
   if(fd<0||fd>=50){
      exit(-1);
   }
-  //printf("reading\n");
-  //valid_pointer(buffer);
   valid_buffer(buffer,buffer+size);
-  //valid_pointer(buffer+size-1);
-  int ret=-1;
   lock_acquire(&file_lock);
+  int ret=-1;
+  //lock_acquire(&file_lock);
   if(fd==0){
     int i;
     for(i=0; i<size; i++){
@@ -191,7 +190,9 @@ int read(int fd, void* buffer, unsigned size){
   }
   else if(fd>2){
      struct file *file_to_read = thread_current()->fd[fd];
+     pin_entry(buffer,buffer+size);
      ret = file_read(file_to_read,buffer,size);
+     unpin_entry(buffer,buffer+size);
   }
   lock_release(&file_lock);
   return ret;
@@ -204,7 +205,6 @@ int write(int fd, const void *buffer, unsigned size){
      exit(-1);
   valid_pointer(buffer);
   valid_pointer(buffer+size-1);
-  //valid_string(buffer);
   lock_acquire(&file_lock);
   if(fd==1){
     putbuf(buffer,size);
@@ -216,7 +216,9 @@ int write(int fd, const void *buffer, unsigned size){
        exit(-1);
        }
     else{
-    ret = file_write(thread_current()->fd[fd],buffer,size);
+       pin_write(buffer,buffer+size);
+       ret = file_write(thread_current()->fd[fd],buffer,size);
+       unpin_entry(buffer,buffer+size);
     }
   }
   lock_release(&file_lock); 
@@ -243,24 +245,25 @@ void close(int fd){
      if(thread_current()->fd[fd]==NULL){
         exit(-1);
      }
-  struct file* release = thread_current()->fd[fd];
   lock_acquire(&file_lock);
+  struct file* release = thread_current()->fd[fd];
+  //lock_acquire(&file_lock);
   file_allow_write(thread_current()->fd[fd]);
   file_close(thread_current()->fd[fd]);
+  //lock_release(&file_lock);
   thread_current()->fd[fd]=NULL;
-  //list_remove(&release->child);
   lock_release(&file_lock);
   }
 }
 
 
 int mmap(int fd, void *addr){
-  //printf("fd is %d\n",fd);
   if(fd>=50||fd<0)
      exit(-1);
   if(pg_ofs(addr)!=0||addr==0||fd==0||fd==1){
      return -1;
   }
+  //lock_acquire(&file_lock);
   struct mmap_file *mmap=(struct mmap_file*)malloc(sizeof(struct mmap_file));
   if(mmap==NULL){
      printf("malloc failed\n");
@@ -268,11 +271,14 @@ int mmap(int fd, void *addr){
   }
   memset(mmap,0,sizeof(struct mmap_file));
   list_init(&mmap->vme_list);
-  //list_push_back(&thread_current()->
   mmap->file=thread_current()->fd[fd];
-  if(mmap->file==NULL||file_length(mmap->file)==0)
+  if(mmap->file==NULL||file_length(mmap->file)==0){
+     //lock_release(&file_lock);
      return -1;
+  }
+  lock_acquire(&file_lock);
   mmap->file=file_reopen(mmap->file);
+  lock_release(&file_lock);
   int mapid=0;
   struct list_elem *e;
   e=list_begin(&mmap->vme_list);  
@@ -283,26 +289,13 @@ int mmap(int fd, void *addr){
      }
      mapid++;
   }   
-  /*for(e=list_begin(&mmap->vme_list);e!=list_end(&mmap->vme_list);e=list_next(e)){
-     if
-     mapid++
-  for(int i=0;i<50;i++){
-    if(mmap->vme_list[i]==NULL){
-       mapid=i;
-       break;
-    }
-  }*/
-  //printf("mapid is %d\n",mapid);
   mmap->mapid=mapid;
   list_push_back(&thread_current()->mmap_list,&mmap->elem);
-  //printf("error\n");
-
   int32_t ofs=0;
   uint32_t read_bytes = file_length(mmap->file);
   while(read_bytes>0){
-     // printf("read bytes is %d\n",read_bytes);
      uint32_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
-     uint32_t page_zero_bytes = PGSIZE - read_bytes;
+     uint32_t page_zero_bytes = PGSIZE - page_read_bytes;
      if(find_vme(addr)!=NULL){
        return -1;
      }
@@ -317,38 +310,28 @@ int mmap(int fd, void *addr){
      vme->zero_bytes=page_zero_bytes;
      list_push_back(&mmap->vme_list,&vme->mmap_elem);
      insert_vme(&thread_current()->vm,vme);
-     
-     //if(!add_map(mmap->file,ofs,addr,page_read_bytes,page_zero_bytes)){
-     // printf("read bytes is %d\n",read_bytes);
-     //printf("page_read_bytes is %d\n",page_read_bytes); 
-      // return -1;
-     //}
      read_bytes -= page_read_bytes;
      ofs+= page_read_bytes;
      addr+=PGSIZE;
-    //printf("read bytes is %d\n",read_bytes); 
   }
-  //printf("vme created");
   thread_current()->mapid=mapid; 
-  //printf("vme created\n");
+  //lock_release(&file_lock);
   return mapid;
 }
 
 void munmap(int mapping){
-  //struct list mmap_list = thread_current()->mmap_list;
+  //lock_acquire(&file_lock);
   struct list_elem *e;
   struct mmap_file *file;
-  //printf("list size of mmap list is %d\n",list_size(&thread_current()->mmap_list));
   for(e=list_begin(&thread_current()->mmap_list);e!=list_end(&thread_current()->mmap_list);e=list_next(e)){
      file=list_entry(e,struct mmap_file,elem);
      if(file->mapid==mapping){
-         //printf("mappid is %d\n",mapping);
-         //do_munmap(file);
          break;
      }
   }
+  lock_acquire(&file_lock);
   do_munmap(file);
-  //printf("munmap enter\n");
+  lock_release(&file_lock);
 }
 
 static void
@@ -356,7 +339,6 @@ syscall_handler (struct intr_frame *f UNUSED)
 {
   int sig_num;
   valid_pointer(f->esp);
-  //thread_current()->esp=f->esp;
   valid_pointer(f->esp+3);
   memcpy(&sig_num,f->esp,4); 
   thread_current()->esp=f->esp;

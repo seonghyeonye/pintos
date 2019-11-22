@@ -22,6 +22,7 @@ struct sppt_entry{
    struct list_elem mmap_elem;
    bool writable;
    bool ref_bit;
+   bool stk_flag;
 };
 
 struct mmap_file{
@@ -31,12 +32,6 @@ struct mmap_file{
    struct list vme_list;
 };
  
-/*struct page{
-   void *kaddr;
-   struct sppt_entry *entry;
-   struct thread *thread;
-   struct list_elem elem;
-};*/
 
 unsigned vm_hash_func(const struct hash_elem *e, void *aux);
 bool vm_less_func(const struct hash_elem *a, const struct hash_elem *b,void *aux);
